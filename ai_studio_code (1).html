@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>末日獵手：高分挑戰版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Segoe UI', sans-serif; }
+        
+        /* 遊戲上方資訊欄 */
+        #hud {
+            position: absolute; top: 20px; left: 20px; color: #fff;
+            text-shadow: 2px 2px #000; pointer-events: none; z-index: 5;
+        }
+        .stat-box { margin-bottom: 5px; font-size: 18px; }
+        #score-val { color: #ffcc00; font-size: 28px; font-weight: bold; }
+        #high-score-box { color: #00ffcc; font-size: 14px; }
+
+        /* 準星 */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 14px; height: 14px;
+            border: 2px solid rgba(255,255,255,0.7); border-radius: 50%; transform: translate(-50%, -50%);
+        }
+
+        /* 爆頭提示 */
+        #headshot-alert {
+            position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+            color: #ffcc00; font-weight: bold; font-size: 30px; display: none;
+            text-shadow: 0 0 10px #ff0000; z-index: 6;
+        }
+
+        /* 初始與結算畫面 */
+        #overlay {
+            position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.85);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: white; z-index: 20; text-align: center;
+        }
+        .btn {
+            margin-top: 20px; padding: 15px 40px; background: #ff4444; border: none;
+            color: white; font-size: 20px; cursor: pointer; border-radius: 5px;
+        }
+        .btn:hover { background: #ff0000; }
+
+        /* 血量條 */
+        #hp-bar-container { width: 200px; height: 10px; background: #444; margin-top: 10px; }
+        #hp-bar-fill { width: 100%; height: 100%; background: #ff4444; transition: width 0.2s; }
+    </style>
+</head>
+<body>
+
+    <!-- HUD 計分表 -->
+    <div id="hud">
+        <div id="high-score-box">最高紀錄: <span id="high-score-val">0</span></div>
+        <div class="stat-box">分數: <span id="score-val">0</span></div>
+        <div class="stat-box">擊殺: <span id="kills-val">0</span> | 爆頭: <span id="heads-val">0</span></div>
+        <div class="stat-box">彈藥: <span id="ammo-val">30</span></div>
+        <div id="hp-bar-container"><div id="hp-bar-fill"></div></div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="headshot-alert">HEADSHOT +250</div>
+
+    <!-- 啟動/死亡畫面 -->
+    <div id="overlay">
+        <div id="menu-content">
+            <h1 style="font-size: 50px; color: #ff4444; margin-bottom: 10px;">ZOMBIE HUNT</h1>
+            <p>移動: WASD | 射擊: 滑鼠左鍵 | 視角: 滑鼠</p>
+            <button class="btn" onclick="startGame()">開始遊戲</button>
+        </div>
+        <div id="death-content" style="display: none;">
+            <h1 style="color: #ff4444;">你陣亡了！</h1>
+            <h2 id="final-score" style="font-size: 40px;">分數: 0</h2>
+            <p id="final-stats">擊殺: 0 | 爆頭: 0</p>
+            <button class="btn" onclick="location.reload()">重新挑戰</button>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, gun;
+        let zombies = [];
+        let score = 0, kills = 0, headshots = 0, ammo = 30, hp = 100;
+        let isGameOver = false;
+        let move = { fwd: false, bwd: false, lft: false, rgt: false };
+
+        // 讀取最高紀錄
+        let highScore = localStorage.getItem('zombieHighScore') || 0;
+        document.getElementById('high-score-val').innerText = highScore;
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x222233);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // 燈光
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+            sun.position.set(5, 15, 5);
+            scene.add(sun);
+
+            // 地面
+            const floor = new THREE.Mesh(
+                new THREE.PlaneGeometry(200, 200),
+                new THREE.MeshStandardMaterial({ color: 0x333333 })
+            );
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
+
+            // 第一人稱手與槍
+            const armGroup = new THREE.Group();
+            const arm = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.7), new THREE.MeshStandardMaterial({ color: 0xd2b48c }));
+            arm.position.set(0.4, -0.3, -0.4);
+            const weapon = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.18, 0.6), new THREE.MeshStandardMaterial({ color: 0x000000 }));
+            weapon.position.set(0.4, -0.15, -0.8);
+            armGroup.add(arm);
+            armGroup.add(weapon);
+            gun = armGroup;
+            camera.add(gun);
+            scene.add(camera);
+
+            setupControls();
+            setInterval(() => { if(!isGameOver) spawnZombie(); }, 2000);
+            animate();
+        }
+
+        function spawnZombie() {
+            const zombie = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.4, 0.5), new THREE.MeshStandardMaterial({ color: 0x2e4d2e }));
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshStandardMaterial({ color: 0xff0000 }));
+            head.position.y = 1.0;
+            zombie.add(body);
+            zombie.add(head);
+
+            const angle = Math.random() * Math.PI * 2;
+            zombie.position.set(Math.cos(angle)*35, 0.7, Math.sin(angle)*35);
+            zombie.userData = { hp: 2 };
+            scene.add(zombie);
+            zombies.push(zombie);
+        }
+
+        function shoot() {
+            if(ammo <= 0) { ammo = 30; updateUI(); return; }
+            ammo--;
+            updateUI();
+            
+            gun.position.z += 0.1;
+            setTimeout(() => gun.position.z -= 0.1, 50);
+
+            const raycaster = new THREE.Raycaster();
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const intersects = raycaster.intersectObjects(zombies, true);
+
+            if (intersects.length > 0) {
+                let hitPart = intersects[0].object;
+                let zObj = hitPart.parent;
+                
+                // 判斷是否爆頭 (紅色方塊是 head)
+                const isHead = hitPart.geometry.type === 'BoxGeometry' && hitPart.position.y === 1.0;
+                
+                if (isHead) {
+                    zObj.userData.hp -= 2; // 爆頭直接死
+                    score += 250;
+                    headshots++;
+                    showHeadshotAlert();
+                } else {
+                    zObj.userData.hp -= 1;
+                    score += 100;
+                }
+
+                if (zObj.userData.hp <= 0) {
+                    scene.remove(zObj);
+                    zombies = zombies.filter(z => z !== zObj);
+                    kills++;
+                }
+                updateUI();
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('score-val').innerText = score;
+            document.getElementById('kills-val').innerText = kills;
+            document.getElementById('heads-val').innerText = headshots;
+            document.getElementById('ammo-val').innerText = ammo;
+            document.getElementById('hp-bar-fill').style.width = hp + "%";
+        }
+
+        function showHeadshotAlert() {
+            const alert = document.getElementById('headshot-alert');
+            alert.style.display = 'block';
+            setTimeout(() => alert.style.display = 'none', 500);
+        }
+
+        function endGame() {
+            isGameOver = true;
+            document.exitPointerLock();
+            document.getElementById('overlay').style.display = 'flex';
+            document.getElementById('menu-content').style.display = 'none';
+            document.getElementById('death-content').style.display = 'block';
+            document.getElementById('final-score').innerText = "總分: " + score;
+            document.getElementById('final-stats').innerText = `擊殺: ${kills} | 爆頭: ${headshots}`;
+            
+            if (score > highScore) {
+                localStorage.setItem('zombieHighScore', score);
+                alert("恭喜！打破最高紀錄！");
+            }
+        }
+
+        function setupControls() {
+            document.addEventListener('mousemove', (e) => {
+                if (document.pointerLockElement === document.body && !isGameOver) {
+                    camera.rotation.y -= e.movementX * 0.003;
+                    camera.rotation.x -= e.movementY * 0.003;
+                    camera.rotation.x = Math.max(-1.5, Math.min(1.5, camera.rotation.x));
+                }
+            });
+            window.addEventListener('keydown', (e) => {
+                if(e.code === 'KeyW') move.fwd = true;
+                if(e.code === 'KeyS') move.bwd = true;
+                if(e.code === 'KeyA') move.lft = true;
+                if(e.code === 'KeyD') move.rgt = true;
+            });
+            window.addEventListener('keyup', (e) => {
+                if(e.code === 'KeyW') move.fwd = false;
+                if(e.code === 'KeyS') move.bwd = false;
+                if(e.code === 'KeyA') move.lft = false;
+                if(e.code === 'KeyD') move.rgt = false;
+            });
+            document.addEventListener('mousedown', () => {
+                if (document.pointerLockElement === document.body && !isGameOver) shoot();
+            });
+        }
+
+        function startGame() {
+            document.getElementById('overlay').style.display = 'none';
+            document.body.requestPointerLock();
+            if (!scene) init();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (isGameOver) return;
+
+            if (move.fwd) camera.translateZ(-0.12);
+            if (move.bwd) camera.translateZ(0.12);
+            if (move.lft) camera.translateX(-0.12);
+            if (move.rgt) camera.translateX(0.12);
+            camera.position.y = 1.6;
+
+            zombies.forEach(z => {
+                z.lookAt(camera.position.x, 0.7, camera.position.z);
+                const dir = new THREE.Vector3().subVectors(camera.position, z.position).normalize();
+                z.position.x += dir.x * 0.06;
+                z.position.z += dir.z * 0.06;
+
+                if (z.position.distanceTo(camera.position) < 1.5) {
+                    hp -= 0.5;
+                    updateUI();
+                    if (hp <= 0) endGame();
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        window.onload = () => {
+            // 先不初始化，等點擊開始按鈕
+        };
+    </script>
+</body>
+</html>
